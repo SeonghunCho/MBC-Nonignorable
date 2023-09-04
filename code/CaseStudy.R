@@ -26,7 +26,7 @@ for(gen in 1:2){
   n1 <- sum(deltavec)
   ###############################################################
   # There is a computational issue when gen = 1 and bnum = 133.
-  indBS <- lapply(1:201,function(sim_num){
+  indBS <- lapply(1:360,function(sim_num){
     set.seed(1234+sim_num)
     ind <- sample(1:n,n,replace=T)
     return(ind)
@@ -135,9 +135,10 @@ for(gen in 1:2){
                              deltavec=deltavec,Aux=Aux,is.mar=is.mar,Bmat=Xmat,
                              Zmat.list=Zmat.list,Zsmat.list=Zsmat.list,alpha=alpha_quan)
       thetahat <- res_MCELmin$thetahat
-      ind_vec_bnum <- 1:200
       if(gen==1){ # There is a computational issue when gen = 1 and bnum = 133.
-        ind_vec_bnum <- (1:201)[-133]
+        ind_vec_bnum <- (1:360)[-(133:144)]
+      }else if(gen==2){
+        ind_vec_bnum <- 1:360
       }
       thetaBS <- mclapply(ind_vec_bnum,function(bnum){
         indb <- indBS[,bnum]
