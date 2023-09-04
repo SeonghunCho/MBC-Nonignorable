@@ -13,8 +13,7 @@ of adults and children in the United States.
 
 ### Availability 
 
-The dataset is available for download via the online data portal at
-\url{www.cdc.gov/nchs/nhanes.htm}.
+The dataset is available for download at www.cdc.gov/nchs/nhanes.htm.
 
 ### Description
 
