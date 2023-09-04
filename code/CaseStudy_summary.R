@@ -3,7 +3,8 @@ library(dplyr)
 library(ggplot2)
 library(reshape)
 library(gridExtra)
-wd <- "SET_WD"
+# wd <- "SET_WD"
+wd <- "~/Desktop/Github/Multiple-Bias-Calibration-for-Valid-Statistical-Inference-under-Nonignorable-Nonresponse/"
 ##############################################################################
 ## Figure S2
 data_NHANES <- read.csv(paste0(wd,"data/NHANES.csv"))

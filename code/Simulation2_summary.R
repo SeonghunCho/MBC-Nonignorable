@@ -4,7 +4,6 @@ library(ggplot2)
 library(reshape)
 library(gridExtra)
 wd <- "SET_WD"
-wd <- "~/Desktop/reproducibility_materials/"
 ##############################################################################
 n_vec <- c(500,2000)
 method_vec <- c("CCA","CEL1","CEL2","CEL3","MCELorc","MCELmin")
