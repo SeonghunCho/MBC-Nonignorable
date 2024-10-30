@@ -3,34 +3,67 @@ library(dplyr)
 library(ggplot2)
 library(reshape)
 library(gridExtra)
-# wd <- "SET_WD"
-wd <- "~/Desktop/Github/Multiple-Bias-Calibration-for-Valid-Statistical-Inference-under-Nonignorable-Nonresponse/"
+wd <- "SET_WD"
 ##############################################################################
 ## Figure S2
 data_NHANES <- read.csv(paste0(wd,"data/NHANES.csv"))
 data_NHANES$GEN <- factor(data_NHANES$GEN,levels=c(2,1))
 levels(data_NHANES$GEN) <- c("Female","Male")
-
 hg <- ggplot(data_NHANES,aes(x=DXA,fill=GEN,color=GEN)) +
   geom_histogram(alpha=0.5, position="identity",binwidth=1) +
   theme_bw()
 ggsave(filename=paste0(wd,"output/summary/case_hist_dxa.pdf"),
        plot=hg,width=8,height=3,device="pdf")
 ##############################################################################
-method_vec <- c("CCA","CEL1","CEL2","CEL3","MCELmin")
+method_vec <- c("CCA","CEL1","CEL2","CEL3","MCEL")
 RES_total <- NULL
 for(gen in 1:2){
+  df_tmp <- data_NHANES[data_NHANES$GEN == gen,]
+  yvec <- (scale(df_tmp$DXA))
+  X1vec <- (scale(df_tmp$AGE))
+  X2vec <- (scale(df_tmp$BMI))
+  my <- attr(yvec,'scaled:center')
+  sy <- attr(yvec,'scaled:scale')
+  mx1 <- attr(X1vec,'scaled:center')
+  sx1 <- attr(X1vec,'scaled:scale')
+  mx2 <- attr(X2vec,'scaled:center')
+  sx2 <- attr(X2vec,'scaled:scale')
   for(method in method_vec){
     load(paste0(wd,"output/res_case/",method,gen,".RData"))
+    thetahat <- as.numeric(RES[,c(paste0("b",0:2),"s","mu","q50")])
+    
+    thetaBS[,2] <- thetaBS[,2]*sy/sx1
+    thetaBS[,3] <- thetaBS[,3]*sy/sx2
+    thetaBS[,1] <- thetaBS[,1]*sy - thetaBS[,2]*mx1 - thetaBS[,3]*mx2 + my
+    thetaBS[,4] <- thetaBS[,4] * sy
+    thetaBS[,5] <- thetaBS[,5] * sy + my
+    thetaBS[,6] <- thetaBS[,6] * sy + my
+    varBS <- diag(var(thetaBS))
+    
+    thetahat[2] <- thetahat[2]*sy/sx1
+    thetahat[3] <- thetahat[3]*sy/sx2
+    thetahat[1] <- thetahat[1]*sy - thetahat[2]*mx1 - thetahat[3]*mx2 + my
+    thetahat[4] <- thetahat[4] * sy
+    thetahat[5] <- thetahat[5] * sy + my
+    thetahat[6] <- thetahat[6] * sy + my
+    
+    var_name_vec <- c(paste0("b",0:2),"s","mu","q50")
+    var_name_vec <- c(var_name_vec,paste0("var_",var_name_vec))
+    
+    RES <- c(thetahat,varBS)
+    RES <- as.data.frame(t(RES))
+    colnames(RES) <- var_name_vec
+    RES$Model <- method
     RES$gen <- gen
     RES_total <- rbind(RES_total,RES)
   }
 }
 ##############################################################################
-## Table 2, 3
+## Table 2
 var_name_vec <- c(paste0("b",0:2),"s","mu","q50")
 for(gent in 1:2){
   RES_tmp <- RES_total %>% filter(gen==gent)
+  
   tt <- RES_tmp$Model
   for(vn in var_name_vec){
     est <- sprintf("%6.3f",RES_tmp[,vn])
@@ -49,10 +82,6 @@ get_legend <- function(myggplot){
   legend <- tmp$grobs[[leg]]
   return(legend)
 }
-
-var_name_vec <- c(paste0("b",0:2),"s","mu","q50")
-method_vec <- c("CCA","CEL1","CEL2","CEL3","MCELmin")
-
 RES_df <- melt(RES_total[,c(var_name_vec,"Model","gen")],id.vars=c("Model","gen"))
 tmp_df <- melt(RES_total[,c(paste0("var_",var_name_vec),"Model","gen")],id.vars=c("Model","gen"))
 colnames(RES_df) <- c("method","gen","parname","est")

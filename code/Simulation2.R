@@ -8,6 +8,7 @@ library(stats)
 nCore <- 1
 ########################################################
 wd <- "SET_WD"
+source(paste0(wd,"code/functions_common.R"))
 source(paste0(wd,"code/functions_sim2.R"))
 ########################################################
 beta0 <- c(0.5,0.5,1)

@@ -8,6 +8,7 @@ library(stats)
 nCore <- 1
 ########################################################
 wd <- "SET_WD"
+source(paste0(wd,"code/functions_common.R"))
 source(paste0(wd,"code/functions_sim1.R"))
 ########################################################
 method_vec <- c("CCA","VAL","IMP","CEL1","CEL2","CEL3","MCEL")
