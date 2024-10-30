@@ -41,16 +41,18 @@ All of the R scripts used in this paper are available in this project.
 ## Reproducibility
 
 1. The folder named `code` contains all of the R scripts.
-2. The R script `functions_sim.R` contains all of the R functions used in the simulation studies.
-3. The R script `Simulation1.R` contains the R code to perform the simulation study in Section 6 of the paper. Its results are stored in `output/res_sim1/`.
-4. The R script `Simulation1_summary.R` contains the R code to make Table 1 and to draw Figure 1.
-5. The R script `Simulation2.R` contains the R code to perform the simulation study in Section A.1 of the supplementary material. Its results are stored in `output/res_sim2/`.
-6. The R script `Simulation2_summary.R` contains the R code to make Table S1 and to draw Figure S1.
-7. The R script `functions_case.R` contains all of the R functions used in the case study.
-8. The R script `CaseStudy.R` contains the R code to perform the case study in Section 7 of the paper. Its results are stored in `output/res_case/`.
-9. The R script `CaseStudy_summary.R` contains the R code to make Table 2 and 3 and to draw Figure S2 and S3.
-10. The folder named `output` contains all of the results from two simulations studies and the case study.
-11. The subfolder named `res_sim1` of `output` contains the results from the first simulation study.
-12. The subfolder named `res_sim2` of `output` contains the results from the second simulation study.
-13. The subfolder named `res_case` of `output` contains the results from the case study.
-14. The subfolder named `summary` of `output` contains all of the tables and the figures presented in the paper.
+2. The R script `functions_common.R` contains the R functions commonly used in the simulation studies and the case study.
+3. The R script `functions_sim1.R` contains the R functions used in the simulation study in Section 6 of the paper.
+4. The R script `functions_sim2.R` contains the R functions used in the simulation study in Section A.1 of the supplementary material.
+5. The R script `functions_case.R` contains the R functions used in the case study in Section 7 of the paper.
+6. The R script `Simulation1.R` contains the R code to perform the simulation study in Section 6 of the paper. Its results are stored in `output/res_sim1/`.
+7. The R script `Simulation1_summary.R` contains the R code to make Table 1 and to draw Figure 1.
+8. The R script `Simulation2.R` contains the R code to perform the simulation study in Section A.1 of the supplementary material. Its results are stored in `output/res_sim2/`.
+9. The R script `Simulation2_summary.R` contains the R code to make Table S1 and to draw Figure S1.
+10. The R script `CaseStudy.R` contains the R code to perform the case study in Section 7 of the paper. Its results are stored in `output/res_case/`.
+11. The R script `CaseStudy_summary.R` contains the R code to make Table 2 and to draw Figure S2 and S3.
+12. The folder named `output` contains all of the results from two simulations studies and the case study.
+13. The subfolder named `res_sim1` of `output` contains the results from the first simulation study.
+14. The subfolder named `res_sim2` of `output` contains the results from the second simulation study.
+15. The subfolder named `res_case` of `output` contains the results from the case study.
+16. The subfolder named `summary` of `output` contains all of the tables and the figures presented in the paper.
