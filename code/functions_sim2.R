@@ -2,241 +2,748 @@
 ## Functions
 ########################################################
 Estphi_MAR <- function(Zmat,deltavec){
-  phihat <- rep(0,ncol(Zmat))
-  count <- 0
-  while(TRUE){
-    count <- count+1
-    phiprev <- phihat
-    etavec <- c(Zmat%*%phihat)
-    pivec <- 1/(1+exp(-etavec))
-    ll <- sum(deltavec*log(pivec) + (1-deltavec)*log(1-pivec))
-    dll <- c(t(Zmat)%*%(deltavec-pivec))
-    d2ll <- - t(Zmat)%*%diag( pivec*(1-pivec) )%*%Zmat
-    phiup <- -c(ginv(d2ll,tol=.Machine$double.eps)%*%dll)
-    d <- sqrt(sum(phiup^2))
-    # cat(count," : d = ",d,", ll = ",ll,"\n",sep="")
-    if(d < 1e-6) break
-    step_size <- 1
-    while(TRUE){
-      phinew <- phihat+step_size*phiup
-      etavec <- c(Zmat%*%phinew)
-      pivec <- 1/(1+exp(-etavec))
-      if(any(pivec==0)|any(pivec==1)){
-        step_size <- 0.5*step_size
-        next
-      }
-      ll_new <- sum(deltavec*log(pivec) + (1-deltavec)*log(1-pivec))
-      if(ll_new<ll){
-        step_size <- 0.5*step_size
+  ######################################################
+  mllog <- function( x, eps, M, der=0 ){
+    # minus log and its first der derivatives, on  eps < x < M
+    # 4th order Taylor approx to left of eps and right of M
+    # der = 0 or 1 or 2
+    # 4th order is lowest that gives self concordance
+    
+    if( missing(M) )
+      M = Inf
+    if( eps>M )
+      stop("Thresholds out of order")
+    
+    lo = x < eps
+    hi = x > M
+    md = (!lo) & (!hi)
+    
+    # Coefficients for 4th order Taylor approx below eps
+    coefs      = rep(0,5)
+    coefs[1]   = -log(eps)
+    coefs[2:5] = (-eps)^-(1:4)/(1:4)
+    
+    # Coefficients for 4th order Taylor approx above M
+    Coefs      = rep(0,5)
+    Coefs[1]   = -log(M)
+    Coefs[2:5] = (-M)^-(1:4)/(1:4)
+    
+    # degree 4 polynomial approx to log
+    h = function(y,cvals){ # cvals are coefs at eps, Coefs at M
+      # sum c[t+1] y^t
+      tee = 1:4
+      ans = y*0
+      ans = ans + cvals[1]
+      for( j in tee )
+        ans = ans + y^j*cvals[j+1]
+      ans
+    }
+    
+    # first derivative of h at y, from approx at pt
+    hp = function(y,pt){
+      tee = 0:3
+      ans = y*0
+      for( j in tee )
+        ans = ans + (-y/pt)^j
+      ans = ans * (-pt)^-1
+      ans
+    }
+    
+    # second derivative of h at y, from approx at pt
+    hpp = function(y,pt){
+      tee = 0:2
+      ans = y*0
+      for( j in tee )
+        ans = ans + (j+1) * (-y/pt)^j
+      ans = ans *(-pt)^-2
+      ans
+    }
+    
+    # function value
+    f      = x*0
+    f[lo]  = h( x[lo]-eps, coefs )
+    f[hi]  = h( x[hi]-M,   Coefs )
+    f[md]  = -log(x[md])
+    
+    if( der<1 )return(cbind(f))
+    
+    # first derivative
+    fp     = x*0
+    fp[lo] = hp( x[lo]-eps, eps )
+    fp[hi] = hp( x[hi]-M, M )
+    fp[md] = -1/x[md]
+    
+    if( der<2 )return(cbind(f,fp))
+    
+    # second derivative
+    fpp     = x*0
+    fpp[lo] = hpp( x[lo]-eps, eps )
+    fpp[hi] = hpp( x[hi]-M, M )
+    fpp[md] = 1/x[md]^2
+    
+    return( cbind(f,fp,fpp) )
+    # End of mllog()
+  }
+  svdlm <- function(X,y){
+    # Linear model regression coefficient via SVD
+    
+    # Tolerances for generalized inverse via SVD
+    RELTOL = 1e-9
+    ABSTOL = 1e-100
+    
+    # Get Xplus = generalized inverse of X
+    # If svd algorithm failures are encountered
+    # it sometimes helps to try svd(t(X)) and
+    # translate back. First check to ensure that
+    # X does not contain NaN or Inf or -Inf.
+    svdX     = svd(X)
+    d        = svdX$d
+    lo       = d < (RELTOL * max(d) + ABSTOL)
+    dinv     = 1/d
+    dinv[lo] = 0
+    Xplus    = svdX$v %*% diag(dinv,nrow=length(dinv)) %*% t(svdX$u)
+    # taking care with diag when dinv is 1x1
+    # to avoid getting the identity matrix of
+    # size floor(dinv)
+    
+    # Return X^+ y
+    Xplus %*% matrix(y,ncol=1)
+  }
+  ######################################################
+  ALPHA <- 0.3
+  BETA <- 0.8
+  BACKEPS <- 0
+  eps <- 1e-8
+  M <- Inf
+  maxit <- 100
+  ######################################################
+  n <- length(deltavec)
+  n1 <- sum(deltavec)
+  n0 <- n-n1
+  phihat <- c(log(n1/n0),rep(0,ncol(Zmat)-1))
+  
+  # Initial f, g
+  pivec <- 1/(1+exp(-c(Zmat%*%phihat)))
+  oldvals1 <- mllog(x=pivec,eps=eps,M=M,der=2)
+  oldvals2 <- mllog(x=1-pivec,eps=eps,M=M,der=2)
+  
+  fold <- sum( (deltavec*oldvals1[,1]+(1-deltavec)*oldvals2[,1]) )
+  gold <- t(Zmat) %*% ( (deltavec*oldvals1[,2]-(1-deltavec)*oldvals2[,2])*pivec*(1-pivec) )
+  
+  converged <- FALSE
+  iter      <- 0
+  while( !converged ){
+    iter <- iter + 1
+    
+    # Get Newton Step
+    zt <- t(Zmat) %*% 
+      diag( (deltavec*oldvals1[,3]+(1-deltavec)*oldvals2[,3])*pivec^2*(1-pivec)^2+
+              (deltavec*oldvals1[,2]-(1-deltavec)*oldvals2[,2])*(1-2*pivec)*pivec*(1-pivec) ) %*% Zmat
+    yt <- gold
+    step <- -svdlm(zt,yt)  #  more reliable than step = -lm( yt~zt-1 )$coef
+    
+    backtrack <- FALSE
+    s <- 1   # usually called t, but R uses t for transpose
+    while( !backtrack ){
+      pivecnew <- 1/(1+exp(-c(Zmat%*%(phihat + s*step))))
+      newvals1 <- mllog(x=pivecnew,eps=eps,M=M,der=2)
+      newvals2 <- mllog(x=1-pivecnew,eps=eps,M=M,der=2)
+      fnew <- sum( (deltavec*newvals1[,1]+(1-deltavec)*newvals2[,1]) )
+      targ <- fold + ALPHA * s * sum( gold*step ) + BACKEPS # (BACKEPS for roundoff, should not be needed)
+      if(  fnew <= targ ){
+        # backtracking has converged
+        backtrack <- TRUE
+        pivec     <- pivecnew
+        oldvals1  <- newvals1
+        oldvals2  <- newvals2
+        fold      <- fnew
+        gold      <- t(Zmat) %*% ( (deltavec*oldvals1[,2]-(1-deltavec)*oldvals2[,2])*pivec*(1-pivec) )
+        # take the step
+        phihat       <- phihat + s*step
       }else{
-        break
+        s <- s * BETA
       }
     }
-    phihat <- phinew
+    
+    # Newton decrement and gradient norm
+    ndec     <- sqrt( sum( (step*gold)^2 ) )
+    gradnorm <- sqrt( sum(gold^2))
+    
+    # print(c(fold,gradnorm,ndec,lam))
+    
+    converged <- ( ndec^2 <= 1e-8)
+    if( iter > maxit )break
   }
-  return(phihat)
+  return(c(phihat))
 }
 Estphi <- function(Bmat,Zsmat,deltavec){
+  ######################################################
+  mreciprocal <- function( x, eps, M, der=0 ){
+    # minus log and its first der derivatives, on  eps < x < M
+    # 4th order Taylor approx to left of eps and right of M
+    # der = 0 or 1 or 2
+    # 4th order is lowest that gives self concordance
+    
+    if( missing(M) )
+      M = Inf
+    if( eps>M )
+      stop("Thresholds out of order")
+    
+    lo = x < eps
+    hi = x > M
+    md = (!lo) & (!hi)
+    
+    # Coefficients for 4th order Taylor approx below eps
+    coefs      = -(-1/eps)^(1:5)
+    
+    # Coefficients for 4th order Taylor approx above M
+    Coefs      = -(-1/M)^(1:5)
+    
+    # degree 4 polynomial approx to log
+    h = function(y,cvals){ # cvals are coefs at eps, Coefs at M
+      # sum c[t+1] y^t
+      tee = 1:4
+      ans = y*0
+      ans = ans + cvals[1]
+      for( j in tee )
+        ans = ans + y^j*cvals[j+1]
+      ans
+    }
+    
+    # first derivative of h at y, from approx at pt
+    hp = function(y,pt){
+      tee = 0:3
+      ans = y*0
+      for( j in tee )
+        ans = ans + (-y/pt)^j
+      ans = ans * (-pt)^-1
+      ans
+    }
+    
+    # second derivative of h at y, from approx at pt
+    hpp = function(y,pt){
+      tee = 0:2
+      ans = y*0
+      for( j in tee )
+        ans = ans + (j+1) * (-y/pt)^j
+      ans = ans *(-pt)^-2
+      ans
+    }
+    
+    # function value
+    f      = x*0
+    f[lo]  = h( x[lo]-eps, coefs )
+    f[hi]  = h( x[hi]-M,   Coefs )
+    f[md]  = 1/x[md]
+    
+    if( der<1 )return(cbind(f))
+    
+    # first derivative
+    fp     = x*0
+    fp[lo] = hp( x[lo]-eps, eps )
+    fp[hi] = hp( x[hi]-M, M )
+    fp[md] = -1/x[md]^2
+    
+    if( der<2 )return(cbind(f,fp))
+    
+    # second derivative
+    fpp     = x*0
+    fpp[lo] = hpp( x[lo]-eps, eps )
+    fpp[hi] = hpp( x[hi]-M, M )
+    fpp[md] = 2/x[md]^3
+    
+    return( cbind(f,fp,fpp) )
+  }
+  svdlm <- function(X,y){
+    # Linear model regression coefficient via SVD
+    
+    # Tolerances for generalized inverse via SVD
+    RELTOL = 1e-9
+    ABSTOL = 1e-100
+    
+    # Get Xplus = generalized inverse of X
+    # If svd algorithm failures are encountered
+    # it sometimes helps to try svd(t(X)) and
+    # translate back. First check to ensure that
+    # X does not contain NaN or Inf or -Inf.
+    svdX     = svd(X)
+    d        = svdX$d
+    lo       = d < (RELTOL * max(d) + ABSTOL)
+    dinv     = 1/d
+    dinv[lo] = 0
+    Xplus    = svdX$v %*% diag(dinv,nrow=length(dinv)) %*% t(svdX$u)
+    # taking care with diag when dinv is 1x1
+    # to avoid getting the identity matrix of
+    # size floor(dinv)
+    
+    # Return X^+ y
+    Xplus %*% matrix(y,ncol=1)
+  }
+  ######################################################
+  ALPHA <- 0.3
+  BETA <- 0.8
+  # BETA <- 0.5
+  BACKEPS <- 0
+  eps <- 1e-8
+  M <- Inf
+  maxit <- 50
+  ######################################################
   n <- length(deltavec)
   n1 <- sum(deltavec)
   n0 <- n-n1
   Bsmat <- Bmat[deltavec,]
-  phihat <- rep(0,ncol(Zsmat))
+  
+  phihat <- c(log(n1/n0),rep(0,ncol(Zsmat)-1))
   q <- length(phihat)
-  count <- 0
-  while(TRUE){
-    count <- count+1
-    phiprev <- phihat
-    pisvec <- 1/(1+exp(-c(Zsmat%*%phihat)))
-    pivec <- rep(1,n)
-    pivec[deltavec] <- pisvec
-    U <- t(Bmat)%*%( deltavec/pivec-1 )
-    dU <- -t(Bsmat)%*%diag( (1-pisvec)/pisvec )%*%Zsmat
-    phiup <- -c(ginv(t(dU)%*%dU,tol=.Machine$double.eps)%*%t(dU)%*%U)
-    d <- sqrt(sum(phiup^2))
-    # cat(count," : d = ",d,"\n",sep="")
-    if(d < 1e-6) break
-    step_size <- 1
-    while(TRUE){
-      phinew <- phihat+step_size*phiup
-      pisvec <- 1/(1+exp(-c(Zsmat%*%phinew)))
-      if(any(pisvec==0)){
-        step_size <- step_size*0.5
-        next
-      }
-      pivec <- rep(1,n)
-      pivec[deltavec] <- pisvec
-      Unew <- t(Bmat)%*%( deltavec/pivec-1 )
-      if(sum(Unew^2)>=sum(U^2)){
-        step_size <- step_size*0.5
-      }else{
-        break
+  
+  # Initial f, g
+  pisvec <- 1/(1+exp(-c(Zsmat%*%phihat)))
+  oldvals <- mreciprocal(x=pisvec,eps=eps,M=M,der=2)
+  
+  fold <- 0.5*sum((t(Bsmat)%*%oldvals[,1] - t(Bmat)%*%rep(1,n))^2)
+  gold <- (t(Zsmat)%*%diag(oldvals[,2]*(1-pisvec)*pisvec)%*%Bsmat) %*% 
+    (t(Bsmat)%*%oldvals[,1] - t(Bmat)%*%rep(1,n))
+  
+  converged <- FALSE
+  iter      <- 0
+  while( !converged ){
+    iter <- iter + 1
+    
+    # Get Newton Step
+    zt <- (t(Zsmat)%*%diag(oldvals[,2]*(1-pisvec)*pisvec)%*%Bsmat) %*%
+      t( (t(Zsmat)%*%diag(oldvals[,2]*(1-pisvec)*pisvec)%*%Bsmat) )
+    for(j in 1:q){
+      for(k in 1:q){
+        zt[j,k] <- zt[j,k] + 
+          sum(c( t(Bsmat)%*%( oldvals[,3]*(1-pisvec)^2*pisvec^2*Zsmat[,j]*Zsmat[,k]+
+                                oldvals[,2]*(1-2*pisvec)*(1-pisvec)*pisvec*Zsmat[,j]*Zsmat[,k] ) ) * 
+                c(t(Bsmat)%*%oldvals[,1] - t(Bmat)%*%rep(1,n)) )
       }
     }
-    phihat <- phinew
-    # if(count>=100){
-    #   Suc <- FALSE
-    #   break
-    # }
+    yt <- gold
+    step <- -svdlm(zt,yt)  #  more reliable than step = -lm( yt~zt-1 )$coef
+    
+    backtrack <- FALSE
+    s <- 1   # usually called t, but R uses t for transpose
+    while( !backtrack ){
+      pisvecnew <- 1/(1+exp(-c(Zsmat%*%(phihat + s*step))))
+      newvals <- mreciprocal(x=pisvecnew,eps=eps,M=M,der=2)
+      fnew <- 0.5*sum((t(Bsmat)%*%newvals[,1] - t(Bmat)%*%rep(1,n))^2)
+      targ <- fold + ALPHA * s * sum( gold*step ) + BACKEPS # (BACKEPS for roundoff, should not be needed)
+      if(  fnew <= targ ){
+        # backtracking has converged
+        backtrack <- TRUE
+        pisvec    <- pisvecnew
+        oldvals   <- newvals
+        fold      <- fnew
+        gold      <- (t(Zsmat)%*%diag(oldvals[,2]*(1-pisvec)*pisvec)%*%Bsmat) %*% 
+          (t(Bsmat)%*%oldvals[,1] - t(Bmat)%*%rep(1,n))
+        # take the step
+        phihat       <- phihat + s*step
+      }else{
+        s <- s * BETA
+      }
+    }
+    
+    # Newton decrement and gradient norm
+    ndec     <- sqrt( sum( (step*gold)^2 ) )
+    gradnorm <- sqrt( sum(gold^2))
+    
+    # print(c(fold,gradnorm,ndec,lam))
+    
+    converged <- ( ndec^2 <= 1e-8)
+    if( iter > maxit )break
   }
-  return(phihat)
-}
-Estquan <- function(quan,ysvec,pvec,alpha){
-  return( sum(pvec*(ysvec<=quan))/sum(pvec)-alpha )
+  return(c(phihat))
 }
 ########################################################
-#    This part is originated from Owen.
-#    There are some differences between this version and Owen's original version.
-#
-#    The function llog() is equal to the natural
-#  logarithm on the interval from eps >0 to infinity.
-#  Between -infinity and eps, llog() is a quadratic.
-#  llogp() and llogpp() are the first two derivatives
-#  of llog().  All three functions are continuous
-#  across the "knot" at eps.
-#
-#    A variation with a second knot at a large value
-#  M did not appear to work as well.
-#
-#    The cutoff point, eps, is usually 1/n, where n
-#  is the number of observations.  Unless n is extraordinarily
-#  large, dividing by eps is not expected to cause numerical
-#  difficulty.
-llog <- function( z, eps ){
-  ans <- z
-  lo <- (z<eps)
-  ans[ lo  ] <- log(eps) - 1.5 + 2*z[lo]/eps - 0.5*(z[lo]/eps)^2
-  ans[ !lo ] <- log( z[!lo] )
-  return(ans)
-}
-llogp <- function( z, eps ){
-  ans <- z
-  lo <- (z<eps)
-  ans[ lo  ] <- 2.0/eps - z[lo]/eps^2
-  ans[ !lo ] <- 1/z[!lo]
-  return(ans)
-}
-llogpp <- function( z, eps ){
-  ans <- z
-  lo <- (z<eps)
-  ans[ lo  ] <- -1.0/eps^2
-  ans[ !lo ] <- -1.0/z[!lo]^2
-  return(ans)
-}
-logelr <- function( P, A, n0, lam, eps){
+# using W
+EstEL0 <- function(P,A,n0,maxit=100){
+  mllog <- function( x, eps, M, der=0 ){
+    # minus log and its first der derivatives, on  eps < x < M
+    # 4th order Taylor approx to left of eps and right of M
+    # der = 0 or 1 or 2
+    # 4th order is lowest that gives self concordance
+    
+    if( missing(M) )
+      M = Inf
+    if( eps>M )
+      stop("Thresholds out of order")
+    
+    lo = x < eps
+    hi = x > M
+    md = (!lo) & (!hi)
+    
+    # Coefficients for 4th order Taylor approx below eps
+    coefs      = rep(0,5)
+    coefs[1]   = -log(eps)
+    coefs[2:5] = (-eps)^-(1:4)/(1:4)
+    
+    # Coefficients for 4th order Taylor approx above M
+    Coefs      = rep(0,5)
+    Coefs[1]   = -log(M)
+    Coefs[2:5] = (-M)^-(1:4)/(1:4)
+    
+    # degree 4 polynomial approx to log
+    h = function(y,cvals){ # cvals are coefs at eps, Coefs at M
+      # sum c[t+1] y^t
+      tee = 1:4
+      ans = y*0
+      ans = ans + cvals[1]
+      for( j in tee )
+        ans = ans + y^j*cvals[j+1]
+      ans
+    }
+    
+    # first derivative of h at y, from approx at pt
+    hp = function(y,pt){
+      tee = 0:3
+      ans = y*0
+      for( j in tee )
+        ans = ans + (-y/pt)^j
+      ans = ans * (-pt)^-1
+      ans
+    }
+    
+    # second derivative of h at y, from approx at pt
+    hpp = function(y,pt){
+      tee = 0:2
+      ans = y*0
+      for( j in tee )
+        ans = ans + (j+1) * (-y/pt)^j
+      ans = ans *(-pt)^-2
+      ans
+    }
+    
+    # function value
+    f      = x*0
+    f[lo]  = h( x[lo]-eps, coefs )
+    f[hi]  = h( x[hi]-M,   Coefs )
+    f[md]  = -log(x[md])
+    
+    if( der<1 )return(cbind(f))
+    
+    # first derivative
+    fp     = x*0
+    fp[lo] = hp( x[lo]-eps, eps )
+    fp[hi] = hp( x[hi]-M, M )
+    fp[md] = -1/x[md]
+    
+    if( der<2 )return(cbind(f,fp))
+    
+    # second derivative
+    fpp     = x*0
+    fpp[lo] = hpp( x[lo]-eps, eps )
+    fpp[hi] = hpp( x[hi]-M, M )
+    fpp[md] = 1/x[md]^2
+    
+    return( cbind(f,fp,fpp) )
+    # End of mllog()
+  }
+  svdlm <- function(X,y){
+    # Linear model regression coefficient via SVD
+    
+    # Tolerances for generalized inverse via SVD
+    RELTOL = 1e-9
+    ABSTOL = 1e-100
+    
+    # Get Xplus = generalized inverse of X
+    # If svd algorithm failures are encountered
+    # it sometimes helps to try svd(t(X)) and
+    # translate back. First check to ensure that
+    # X does not contain NaN or Inf or -Inf.
+    svdX     = svd(X)
+    d        = svdX$d
+    lo       = d < (RELTOL * max(d) + ABSTOL)
+    dinv     = 1/d
+    dinv[lo] = 0
+    Xplus    = svdX$v %*% diag(dinv,nrow=length(dinv)) %*% t(svdX$u)
+    # taking care with diag when dinv is 1x1
+    # to avoid getting the identity matrix of
+    # size floor(dinv)
+    
+    # Return X^+ y
+    Xplus %*% matrix(y,ncol=1)
+  }
+  
+  ALPHA <- 0.3
+  BETA <- 0.8
+  BACKEPS <- 0
+  
   P <- as.matrix(P)
-  A <- as.matrix(A)
   n1 <- nrow(P)
   K <- ncol(P)
+  if(is.null(A)){
+    r <- 0
+  }else{
+    A <- as.matrix(A)
+    r <- ncol(A)
+  }
+  
   n <- n1+n0
-  z <- cbind(P-1,A)
-  arg <- as.vector( n/n1 + z %*% lam )
-  return( -sum( llog(arg,eps) ) - n0*llog(sum(lam[1:K]),eps) )
+  z <- cbind(P-1.0,A)
+  
+  # eps <- 1/n
+  eps <- 1e-8
+  M <- Inf
+  
+  lam <- c( rep(n/(K*n1),K) , rep(0,r) )
+  init1 <- mllog( (n/n1)+z%*%lam, eps=eps, M=M, der=2 )
+  init2 <- mllog( sum(lam[1:K]), eps=eps, M=M, der=2 )
+  
+  # Initial f, g
+  fold <- sum(init1[,1]) + n0*init2[,1]
+  gold <- apply( z * init1[,2],2,sum )
+  gold[1:K] <- gold[1:K] + n0*init2[2]
+  
+  converged <- FALSE
+  iter      <- 0
+  oldvals1  <- init1
+  oldvals2  <- init2
+  while( !converged ){
+    iter <- iter + 1
+    
+    # Get Newton Step
+    rootllpp <- sqrt(oldvals1[,3])  # sqrt 2nd deriv of -llog lik
+    rootllW <- sqrt(n0*oldvals2[3])
+    zt <- z
+    for( j in 1:(K+r) )
+      zt[,j] <- zt[,j] * rootllpp
+    zt <- rbind(zt,c(rep(rootllW,K),rep(0.0,r)))
+    yt   <- c(oldvals1[,2] / rootllpp, (n0*oldvals2[2])/rootllW)
+    step <- -svdlm(zt,yt)  #  more reliable than step = -lm( yt~zt-1 )$coef
+    
+    backtrack <- FALSE
+    s <- 1   # usually called t, but R uses t for transpose
+    while( !backtrack ){
+      newvals1 <- mllog( (n/n1)+z%*%(lam+s*step),eps=eps,M=M,der=2 )
+      newvals2 <- mllog( sum((lam+s*step)[1:K]),eps=eps,M=M,der=2 )
+      fnew <- sum(newvals1[,1]) + n0*newvals2[,1]
+      targ <- fold + ALPHA * s * sum( gold*step ) + BACKEPS # (BACKEPS for roundoff, should not be needed)
+      if(  fnew <= targ ){
+        # backtracking has converged
+        backtrack <- TRUE
+        oldvals1  <- newvals1
+        oldvals2  <- newvals2
+        fold      <- fnew
+        gold      <- apply( z * oldvals1[,2],2,sum )
+        gold[1:K] <- gold[1:K] + n0*oldvals2[,2]
+        # take the step
+        lam       <- lam + s*step
+      }else{
+        s <- s * BETA
+      }
+    }
+    
+    # Newton decrement and gradient norm
+    ndec     <- sqrt( sum( (step*gold)^2 ) )
+    gradnorm <- sqrt( sum(gold^2))
+    
+    # print(c(fold,gradnorm,ndec,lam))
+    
+    converged <- ( ndec^2 <= 1e-8)
+    if( iter > maxit )break
+  }
+  
+  pvec <- as.vector(1/(n/n1+z%*%lam))
+  pvec <- pvec/sum(pvec)
+  return(list("pvec"=pvec,"lam"=as.vector(lam),"elval"=fold))
 }
-EstEL <- function(P,A,n0,eps,maxit=200){
+# without using W
+EstEL1 <- function(P,A,n0,maxit=100){
+  mllog <- function( x, eps, M, der=0 ){
+    # minus log and its first der derivatives, on  eps < x < M
+    # 4th order Taylor approx to left of eps and right of M
+    # der = 0 or 1 or 2
+    # 4th order is lowest that gives self concordance
+    
+    if( missing(M) )
+      M = Inf
+    if( eps>M )
+      stop("Thresholds out of order")
+    
+    lo = x < eps
+    hi = x > M
+    md = (!lo) & (!hi)
+    
+    # Coefficients for 4th order Taylor approx below eps
+    coefs      = rep(0,5)
+    coefs[1]   = -log(eps)
+    coefs[2:5] = (-eps)^-(1:4)/(1:4)
+    
+    # Coefficients for 4th order Taylor approx above M
+    Coefs      = rep(0,5)
+    Coefs[1]   = -log(M)
+    Coefs[2:5] = (-M)^-(1:4)/(1:4)
+    
+    # degree 4 polynomial approx to log
+    h = function(y,cvals){ # cvals are coefs at eps, Coefs at M
+      # sum c[t+1] y^t
+      tee = 1:4
+      ans = y*0
+      ans = ans + cvals[1]
+      for( j in tee )
+        ans = ans + y^j*cvals[j+1]
+      ans
+    }
+    
+    # first derivative of h at y, from approx at pt
+    hp = function(y,pt){
+      tee = 0:3
+      ans = y*0
+      for( j in tee )
+        ans = ans + (-y/pt)^j
+      ans = ans * (-pt)^-1
+      ans
+    }
+    
+    # second derivative of h at y, from approx at pt
+    hpp = function(y,pt){
+      tee = 0:2
+      ans = y*0
+      for( j in tee )
+        ans = ans + (j+1) * (-y/pt)^j
+      ans = ans *(-pt)^-2
+      ans
+    }
+    
+    # function value
+    f      = x*0
+    f[lo]  = h( x[lo]-eps, coefs )
+    f[hi]  = h( x[hi]-M,   Coefs )
+    f[md]  = -log(x[md])
+    
+    if( der<1 )return(cbind(f))
+    
+    # first derivative
+    fp     = x*0
+    fp[lo] = hp( x[lo]-eps, eps )
+    fp[hi] = hp( x[hi]-M, M )
+    fp[md] = -1/x[md]
+    
+    if( der<2 )return(cbind(f,fp))
+    
+    # second derivative
+    fpp     = x*0
+    fpp[lo] = hpp( x[lo]-eps, eps )
+    fpp[hi] = hpp( x[hi]-M, M )
+    fpp[md] = 1/x[md]^2
+    
+    return( cbind(f,fp,fpp) )
+    # End of mllog()
+  }
+  svdlm <- function(X,y){
+    # Linear model regression coefficient via SVD
+    
+    # Tolerances for generalized inverse via SVD
+    RELTOL = 1e-9
+    ABSTOL = 1e-100
+    
+    # Get Xplus = generalized inverse of X
+    # If svd algorithm failures are encountered
+    # it sometimes helps to try svd(t(X)) and
+    # translate back. First check to ensure that
+    # X does not contain NaN or Inf or -Inf.
+    svdX     = svd(X)
+    d        = svdX$d
+    lo       = d < (RELTOL * max(d) + ABSTOL)
+    dinv     = 1/d
+    dinv[lo] = 0
+    Xplus    = svdX$v %*% diag(dinv,nrow=length(dinv)) %*% t(svdX$u)
+    # taking care with diag when dinv is 1x1
+    # to avoid getting the identity matrix of
+    # size floor(dinv)
+    
+    # Return X^+ y
+    Xplus %*% matrix(y,ncol=1)
+  }
+  
+  ALPHA <- 0.3
+  BETA <- 0.8
+  BACKEPS <- 0
+  
   P <- as.matrix(P)
-  A <- as.matrix(A)
   n1 <- nrow(P)
   K <- ncol(P)
-  r <- ncol(A)
+  if(is.null(A)){
+    r <- 0
+  }else{
+    A <- as.matrix(A)
+    r <- ncol(A)
+  }
   
   n <- n1+n0
-  z <- cbind(P-1,A)
+  X <- cbind(P,A)
   
-  TINY <- sqrt( .Machine$double.xmin )
-  svdtol <- TINY
-  gradtol <- TINY
+  # eps <- 1/n
+  eps <- 1e-8
+  M <- Inf
   
   lam <- c( rep(n/(K*n1),K) , rep(0,r) )
   
-  #
-  #    Preset the weights for combining Newton and gradient
-  # steps at each of 16 inner iterations, starting with
-  # the Newton step and progressing towards shorter vectors
-  # in the gradient direction.  Most commonly only the Newton
-  # step is actually taken, though occasional step reductions
-  # do occur.
-  #
+  init <- mllog( 1+X%*%lam, eps=eps, M=M, der=2 )
   
-  nwts <- c( 3^-c(0:3), rep(0,12) )
-  gwts <- 2^( -c(0:(length(nwts)-1)))
-  gwts <- (gwts^2 - nwts^2)^.5
-  gwts[12:16] <- gwts[12:16] * 10^-c(1:5)
+  # Initial f, g
+  fold <- sum(init[,1])
+  gold <- t(X)%*%init[,2]
   
-  #
-  #    Iterate, finding the Newton and gradient steps, and
-  # choosing a step that reduces the objective if possible.
-  #
-  
-  nits <- 0
-  gsize <- gradtol + 1
-  while(  nits<maxit && gsize > gradtol  ){
-    sl <- sum(lam[1:K])
-    arg <- as.vector( n/n1 + z %*% lam )
-    wts1 <- as.vector( llogp(arg, eps) )
-    wts2 <- as.vector( -llogpp(arg, eps) )
-    grad <- -t(z)%*%wts1
-    grad[1:K] <- grad[1:K] - n0*llogp(sl,eps)
-    gsize <- mean( abs(grad) )
+  converged <- FALSE
+  iter      <- 0
+  oldvals  <- init
+  while( !converged ){
+    iter <- iter + 1
     
-    Hess <- t(z*wts2)%*%z
-    Hess[1:K,1:K] <- Hess[1:K,1:K] + n0*llogpp(sl,eps)
-    eigenH <- eigen( Hess )
-    if( min(eigenH$values) < max(eigenH$values)*svdtol )
-      eigenH$values <- eigenH$values + max(eigenH$values)*svdtol
-    nstep <- eigenH$vectors %*% (t(eigenH$vectors)/eigenH$values)
-    nstep <- as.vector( nstep %*% grad )
+    # Get Newton Step
+    rootllpp <- sqrt(oldvals[,3])  # sqrt 2nd deriv of -llog lik
+    zt <- X
+    for( j in 1:(K+r) )
+      zt[,j] <- zt[,j] * rootllpp
+    yt   <- oldvals[,2] / rootllpp
+    step <- -svdlm(zt,yt)  #  more reliable than step = -lm( yt~zt-1 )$coef
     
-    gstep <- -grad
-    if(  sum(nstep^2) < sum(gstep^2) )
-      gstep <- gstep*sum(nstep^2)^.5/sum(gstep^2)^.5
-    ologelr <- logelr(P, A, n0, lam, eps)
-    ninner <- 0
-    for(  i in 1:length(nwts) ){
-      nlogelr <- logelr( P, A, n0, lam+nwts[i]*nstep+gwts[i]*gstep, eps )
-      if( nlogelr < ologelr ){
-        lam <- lam+nwts[i]*nstep+gwts[i]*gstep
-        ninner <- i
-        break
+    backtrack <- FALSE
+    s <- 1   # usually called t, but R uses t for transpose
+    while( !backtrack ){
+      newvals <- mllog( 1+X%*%(lam+s*step),eps=eps,M=M,der=2 )
+      fnew <- sum(newvals[,1])
+      targ <- fold + ALPHA * s * sum( gold*step ) + BACKEPS # (BACKEPS for roundoff, should not be needed)
+      if(  fnew <= targ ){
+        # backtracking has converged
+        backtrack <- TRUE
+        oldvals   <- newvals
+        fold      <- fnew
+        gold      <- t(X)%*%oldvals[,2]
+        # take the step
+        lam       <- lam + s*step
+      }else{
+        s <- s * BETA
       }
     }
-    nits <- nits+1
-    if( ninner==0 ) nits <- maxit
+    
+    # Newton decrement and gradient norm
+    ndec     <- sqrt( sum( (step*gold)^2 ) )
+    gradnorm <- sqrt( sum(gold^2))
+    
+    # print(c(fold,gradnorm,ndec,lam))
+    
+    converged <- ( ndec^2 <= 1e-8)
+    if( iter > maxit )break
   }
-  arg <- as.vector( n/n1 + z %*% lam )
-  pvec <- as.vector( llogp(arg, eps) )
+  
+  pvec <- as.vector(1/(1+X%*%lam))
   pvec <- pvec/sum(pvec)
-  return(pvec)
+  return(list("pvec"=pvec,"lam"=as.vector(lam),"elval"=fold))
 }
 ########################################################
-CCA <- function(Xmat,yvec,deltavec,alpha){
-  Xsmat <- Xmat[deltavec,]
+CCA <- function(yvec,deltavec){
   ysvec <- yvec[deltavec]
-  betahat <- c(solve(t(Xsmat)%*%Xsmat)%*%t(Xsmat)%*%ysvec)
   muhat <- mean(ysvec)
-  quanhat <- quantile(ysvec,prob=alpha,names=F)
-  thetahat <- c(betahat,muhat,quanhat)
-  return(thetahat)
+  return(muhat)
 }
-VAL <- function(Xval,yval,alpha){
-  nval <- length(yval)
-  betahat <- c(solve(t(Xval)%*%Xval)%*%t(Xval)%*%yval)
-  muhat <- mean(yval)
-  quanhat <- quantile(yval,prob=alpha,names=F)
-  thetahat <- c(betahat,muhat,quanhat)
-  return(thetahat)
-}
-VALnuis <- function(Xval,yval){
-  nval <- length(yval)
-  betahat <- c(solve(t(Xval)%*%Xval)%*%t(Xval)%*%yval)
-  nuishat <- c(betahat)
-  return(nuishat)
-}
-CEL <- function(Xmat,yvec,deltavec,Aux,is.mar,Zmat,Zsmat,Bmat,alpha){
+CEL <- function(yvec,deltavec,Aux,is.mar,Zmat,Zsmat,Bmat=NULL){
   ##########################################
   n <- length(deltavec)
   n1 <- sum(deltavec)
-  Xsmat <- Xmat[deltavec,]
   ysvec <- yvec[deltavec]
   ##########################################
   if(is.mar){
@@ -244,133 +751,84 @@ CEL <- function(Xmat,yvec,deltavec,Aux,is.mar,Zmat,Zsmat,Bmat,alpha){
   }else{
     phihat <- Estphi(Bmat,Zsmat,deltavec)
   }
-  pivec <- 1/(1+exp(-c(Zsmat%*%phihat)))
+  pisvec <- 1/(1+exp(-c(Zsmat%*%phihat)))
   ##########################################
-  pimat <- matrix(pivec,ncol=1)
-  pvec <- EstEL(pimat,Aux,n-n1,1/(10*n))
-  betahat <- c(solve(t(Xsmat)%*%diag(pvec)%*%Xsmat)%*%t(Xsmat)%*%diag(pvec)%*%ysvec)
+  pimat <- matrix(pisvec,ncol=1)
+  res_el <- EstEL0(pimat,Aux,n-n1)
+  pvec <- res_el$pvec
   muhat <- sum(pvec*ysvec)/sum(pvec)
-  res_quan <- uniroot(Estquan,interval=range(ysvec),ysvec=ysvec,pvec=pvec,alpha=alpha)
-  quanhat <- res_quan$root
-  thetahat <- c(betahat,muhat,quanhat)
-  return(thetahat)
+  return(muhat)
 }
-MCEL <- function(nuis,Xmat,yvec,deltavec,Aux,is.mar,Zmat.list,Zsmat.list,Bmat,alpha){
+MCEL_int <- function(nuis_in,Xmat,yvec,deltavec,Aux,is.mar,Zmat.list,Zsmat.list,phihat.list){
   ##########################################
   n <- length(deltavec)
   n1 <- sum(deltavec)
-  beta <- nuis
-  s2 <- s20
-  yhat <- c(Xmat%*%beta)
-  Xsmat <- Xmat[deltavec,]
-  ysvec <- yvec[deltavec]
-  ##########################################
+  beta <- nuis_in
+  s2 <- 1/3
+  yhat <- c(cbind(1,Xmat)%*%beta)
   K <- length(is.mar)
+  ##########################################
   pimat <- NULL
   for(k in 1:K){
     if(is.mar[k]){
       Zmat <- Zmat.list[[k]]
       Zsmat <- Zsmat.list[[k]]
-      phihat <- Estphi_MAR(Zmat,deltavec)
-      pivec <- 1/(1+exp( -c(Zsmat%*%phihat) ))
-      pimat <- cbind(pimat,pivec)
+      phihat <- phihat.list[[k]]
+      pisvec <- 1/(1+exp( -c(Zsmat%*%phihat) ))
+      pivec <- 1/(1+exp( -c(Zmat%*%phihat) ))
+      pimat <- cbind(pimat,pisvec - mean(pivec))
     }else{
+      H <- 1
       Zmat <- Zmat.list[[k]]
       Zsmat <- Zsmat.list[[k]]
-      phihat <- Estphi(Bmat,Zsmat,deltavec)
+      phihat <- phihat.list[[k]]
       q <- length(phihat)
-      est_adj <- function(adj){
-        res_int <- integrate(function(uvec){
-          sapply(uvec,function(u){
-            sum(1/(1+exp(-adj-c(Zmat%*%phihat[-q])-
-                           phihat[q]*( yhat+sqrt(s2)*u ))))*
-              dnorm(x=u,mean=0,sd=1)
-          })
-        },-Inf,Inf)
-        return(res_int$value-n1)
-      }
-      M <- 1
-      while(TRUE){
-        if( est_adj(M)*est_adj(-M)<0 ){
-          break
-        }else{
-          M <- M+1
-        }
-      }
-      res_adj <- uniroot(est_adj,interval=c(-M,M))
-      adj <- res_adj$root
-      pivec <- 1/(1+exp( -adj-c(Zsmat%*%phihat) ))
-      pimat <- cbind(pimat,pivec)
+      pisvec <- 1/(1+exp( -c(Zsmat%*%phihat) ))
+      eta_tmp <- c(cbind(Zmat,yhat)%*%phihat)
+      res_int <- integrate(function(uvec){
+        sapply(uvec,function(u){
+          pivec <- 1/(1+exp(-eta_tmp-phihat[q]*sqrt(s2)*u ) )
+          return( mean( (1-pivec)^H*pivec )*dnorm(x=u,mean=0,sd=1) )
+        })
+      },-Inf,Inf)
+      pimat <- cbind(pimat,pisvec - res_int$value - sum(1-(1-pisvec)^H)/n)
     }
   }
+  res_el <- EstEL1(pimat,Aux,n-n1)
   ##########################################
-  pvec <- EstEL(pimat,Aux,n-n1,1/(10*n))
-  betahat <- c(solve(t(Xsmat)%*%diag(pvec)%*%Xsmat)%*%t(Xsmat)%*%diag(pvec)%*%ysvec)
-  muhat <- sum(pvec*ysvec)/sum(pvec)
-  res_quan <- uniroot(Estquan,interval=range(ysvec),ysvec=ysvec,pvec=pvec,alpha=alpha)
-  quanhat <- res_quan$root
-  thetahat <- c(betahat,muhat,quanhat)
-  return(thetahat)
+  pvec <- res_el$pvec
+  return(list(pvec=pvec))
 }
-MCELmin <- function(nuis,Xmat,yvec,deltavec,Aux,is.mar,Zmat.list,Zsmat.list,Bmat,alpha){
+MCEL <- function(nuis_init,Xmat,yvec,deltavec,Aux,is.mar,Zmat.list,Zsmat.list,phihat.list){
   ##########################################
-  n <- length(deltavec)
   n1 <- sum(deltavec)
-  beta <- nuis
-  s2 <- s20
-  yhat <- c(Xmat%*%beta)
-  Xsmat <- Xmat[deltavec,]
+  Xtmp <- cbind(1,Xmat[deltavec,])
   ysvec <- yvec[deltavec]
   ##########################################
-  K <- length(is.mar)
-  pimat <- NULL
-  for(k in 1:K){
-    if(is.mar[k]){
-      Zmat <- Zmat.list[[k]]
-      Zsmat <- Zsmat.list[[k]]
-      phihat <- Estphi_MAR(Zmat,deltavec)
-      pivec <- 1/(1+exp( -c(Zsmat%*%phihat) ))
-      pimat <- cbind(pimat,pivec)
+  nuis_prev <- nuis_init
+  res_tmp <- MCEL_int(nuis_prev,Xmat,yvec,deltavec,Aux,is.mar,Zmat.list,Zsmat.list,phihat.list)
+  pvec_prev <- res_tmp$pvec
+  is_conv <- T
+  count <- 0
+  while(TRUE){
+    count <- count+1
+    nuis_new <- c(solve(t(Xtmp)%*%diag(pvec_prev)%*%Xtmp)%*%t(Xtmp)%*%diag(pvec_prev)%*%ysvec)
+    res_tmp <- MCEL_int(nuis_new,Xmat,yvec,deltavec,Aux,is.mar,Zmat.list,Zsmat.list,phihat.list)
+    pvec_new <- res_tmp$pvec
+    diff <- sqrt(sum((nuis_new-nuis_prev)^2))
+    if(diff < 1e-6 ){
+      break
     }else{
-      Zmat <- Zmat.list[[k]]
-      Zsmat <- Zsmat.list[[k]]
-      phihat <- Estphi(Bmat,Zsmat,deltavec)
-      q <- length(phihat)
-      est_adj <- function(adj){
-        res_int <- integrate(function(uvec){
-          sapply(uvec,function(u){
-            sum(1/(1+exp(-adj-c(Zmat%*%phihat[-q])-
-                           phihat[q]*( yhat+sqrt(s2)*u ))))*
-              dnorm(x=u,mean=0,sd=1)
-          })
-        },-Inf,Inf)
-        return(res_int$value-n1)
-      }
-      M <- 1
-      while(TRUE){
-        if( est_adj(M)*est_adj(-M)<0 ){
-          break
-        }else{
-          M <- M+1
-        }
-      }
-      res_adj <- uniroot(est_adj,interval=c(-M,M))
-      adj <- res_adj$root
-      pivec <- 1/(1+exp( -adj-c(Zsmat%*%phihat) ))
-      pimat <- cbind(pimat,pivec)
+      nuis_prev <- nuis_new
+      pvec_prev <- pvec_new
+    }
+    if(count >= 100){
+      is_conv <- F
+      break
     }
   }
   ##########################################
-  pvec <- EstEL(pimat,Aux,n-n1,1/(10*n))
-  betahat <- c(solve(t(Xsmat)%*%diag(pvec)%*%Xsmat)%*%t(Xsmat)%*%diag(pvec)%*%ysvec)
+  pvec <- res_tmp$pvec
   muhat <- sum(pvec*ysvec)/sum(pvec)
-  res_quan <- uniroot(Estquan,interval=range(ysvec),ysvec=ysvec,pvec=pvec,alpha=alpha)
-  quanhat <- res_quan$root
-  thetahat <- c(betahat,muhat,quanhat)
-  nuishat <- c(betahat)
-  return(list(thetahat=thetahat,diff=sum((nuis-nuishat)^2)))
-}
-dif_nuis <- function(nuis,Xmat,yvec,deltavec,Aux,is.mar,Zmat.list,Zsmat.list,Bmat,alpha){
-  res_tmp <- MCELmin(nuis,Xmat,yvec,deltavec,Aux,is.mar,Zmat.list,Zsmat.list,Bmat,alpha)
-  return(res_tmp$diff)
+  return(list(muhat=muhat,is_conv=is_conv,count=count))
 }
