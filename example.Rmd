@@ -1,0 +1,1087 @@
+---
+title: Multiple Bias Calibration for Valid Statistical Inference under Nonignorable Nonresponse
+author: Seonghun Cho, Jae-Kwang Kim, and Yumou Qiu
+date: January 27, 2024
+fontsize: 11pt
+itemsep: 3pt
+parskip: 3pt
+output: html_document
+---
+
+# 1. Inroduction
+
+In this document, we provide a step-by-step tutorial for implementing the proposed method.
+
+# 2. Prerequisite
+
+We summarized the inputs and the outputs of the basic functions that are used in the proposed algorithms as follows:
+
+## `Estquan`
+- Input:
+  - `quan`: $q$ value
+  - `ysvec`: observed $y$ values
+  - `pvec`: weights of observed $y$ values
+  - `alpha`: $\alpha$ value
+- Output:
+  - return $\sum_{i=1}^{n} \delta_{i} p_{i} I(y_{i} \le q) - \alpha$.
+
+## `Estphi_MAR`
+
+- PS model:
+\begin{equation}
+  \mathrm{logit}\left\{ \frac{\pi(\mathbf{x};\boldsymbol{\phi})}{1-\pi(\mathbf{x};\boldsymbol{\phi})} \right\} = \mathbf{x}^{\prime}\boldsymbol{\phi}.
+\end{equation}
+- Estimating equation:
+\begin{equation}
+  \sum_{i=1}^{n} \frac{\delta_{i} - \pi_{i}}{\pi_{i}(1-\pi_{i})} \frac{\partial \pi(\mathbf{x}_{i};\boldsymbol{\phi})}{\partial \boldsymbol{\phi}} = \mathbf{0},
+\end{equation}
+where $\pi_{i} = \pi(\mathbf{x}_{i};\boldsymbol{\phi})$.
+- Input:
+  - `Zmat`: $n \times (p+1)$ matrix $(\mathbf{x}_{1},\ldots,\mathbf{x}_{n})^{\prime}$.
+  - `deltavec`: $n$-dimensional vector $(\delta_{1},\ldots,\delta_{n})^{\prime}$.
+- Output:
+  - $\widehat{\boldsymbol{\phi}}$: $(p+1)$-dimensional vector of estimated coefficient of the PS model.
+
+## `Estphi`
+- PS model:
+\begin{equation}
+  \mathrm{logit}\left\{ \frac{\pi(\mathbf{x},y;\boldsymbol{\phi})}{1-\pi(\mathbf{x},y;\boldsymbol{\phi})} \right\} = \mathbf{z}^{\prime}\boldsymbol{\phi},
+\end{equation}
+where $\mathbf{z}^{\prime} = (\mathbf{x}^{\prime},y)$.
+- Estimating equation:
+\begin{equation}
+  \sum_{i=1}^{n} \left( \frac{\delta_{i}}{\pi_{i}} - 1 \right) \mathbf{b}_{i} = \mathbf{0},
+\end{equation}
+where $\pi_{i} = \pi(\mathbf{x}_{i},y_{i};\boldsymbol{\phi})$.
+- Input:
+  - `Bmat`: $n \times q$ matrix $(\mathbf{b}_{1},\ldots,\mathbf{b}_{n})^{\prime}$.
+  - `Zsmat`: $n_{1} \times (p+1)$ matrix $(\mathbf{z}_{i}: \delta_{i} = 1)^{\prime}$.
+  - `deltavec`: $n$-dimensional vector $(\delta_{1},\ldots,\delta_{n})^{\prime}$.
+- Output:
+  - $\widehat{\boldsymbol{\phi}}$: $(p+1)$-dimensional vector of estimated coefficient of the PS model.
+
+
+## `EstEL0`
+- Optimization problem: maximize the following function with respect to $(\{p_{i}\},W)$
+\begin{equation}
+  \sum_{i=1}^{n} \delta_{i} \log p_{i} + n_{0} \log (1-W)
+\end{equation}
+subject to
+\begin{align}
+  \sum_{i=1}^{n} \delta_{i} p_{i} & = 1, \\
+  \sum_{i=1}^{n} \delta_{i} p_{i} \widehat{\pi}_{ki} & = W, \quad k=1,\ldots,K, \\
+  \sum_{i=1}^{n} \delta_{i} p_{i} \mathbf{a}_{i} & = \bar{\mathbf{a}}.
+\end{align}
+- Input:
+  - `P`: $n_{1} \times K$ matrix $(\boldsymbol{\pi}_{1},\ldots,\boldsymbol{\pi}_{K})$ where $\boldsymbol{\pi}_{k} = (\widehat{\pi}_{ki}:\delta_{i} = 1)^{\prime}$.
+  - `A`: $n_{1} \times r$ matrix $(\mathbf{a}_{i} - \bar{\mathbf{a}} : \delta_{i} = 1)^{\prime}$.
+  - `n0`: the number of missing values.
+  - `maxit`: max iteration number (defulat=100).
+- Output:
+  - a list
+    - `pvec`: $n_{1}$-dimensional vector $(\widehat{p}_{i} : \delta_{i} = 1)$.
+
+## `EstEL1`
+- Optimization problem: maximize the following function with respect to $\{p_{i}\}$
+\begin{equation}
+  \sum_{i=1}^{n} \delta_{i} \log p_{i}
+\end{equation}
+subject to
+\begin{align}
+  \sum_{i=1}^{n} \delta_{i} p_{i} & = 1, \\
+  \sum_{i=1}^{n} \delta_{i} p_{i} \widehat{\pi}_{ki} & = \bar{\pi}_{k}, \quad k=1,\ldots,K, \\
+  \sum_{i=1}^{n} \delta_{i} p_{i} \mathbf{a}_{i} & = \bar{\mathbf{a}}.
+\end{align}
+- Input:
+  - `P`: $n_{1} \times K$ matrix $(P_{1},\ldots,P_{K})$ where $P_{k} = (\widehat{\pi}_{ki} - \bar{\pi}_{k}:\delta_{i} = 1)^{\prime}$.
+  - `A`: $n_{1} \times r$ matrix $(\mathbf{a}_{i} - \bar{\mathbf{a}} : \delta_{i} = 1)^{\prime}$.
+  - `n0`: the number of missing values.
+  - `maxit`: max iteration number (defulat=100).
+- Output:
+  - a list
+    - `pvec`: $n_{1}$-dimensional vector $(\widehat{p}_{i} : \delta_{i} = 1)$.
+
+
+```{r, echo=FALSE}
+Estquan <- function(quan,ysvec,pvec,alpha){
+  return( sum(pvec*(ysvec<=quan))/sum(pvec)-alpha )
+}
+Estphi_MAR <- function(Zmat,deltavec){
+  ######################################################
+  mllog <- function( x, eps, M, der=0 ){
+    # minus log and its first der derivatives, on  eps < x < M
+    # 4th order Taylor approx to left of eps and right of M
+    # der = 0 or 1 or 2
+    # 4th order is lowest that gives self concordance
+    
+    if( missing(M) )
+      M = Inf
+    if( eps>M )
+      stop("Thresholds out of order")
+    
+    lo = x < eps
+    hi = x > M
+    md = (!lo) & (!hi)
+    
+    # Coefficients for 4th order Taylor approx below eps
+    coefs      = rep(0,5)
+    coefs[1]   = -log(eps)
+    coefs[2:5] = (-eps)^-(1:4)/(1:4)
+    
+    # Coefficients for 4th order Taylor approx above M
+    Coefs      = rep(0,5)
+    Coefs[1]   = -log(M)
+    Coefs[2:5] = (-M)^-(1:4)/(1:4)
+    
+    # degree 4 polynomial approx to log
+    h = function(y,cvals){ # cvals are coefs at eps, Coefs at M
+      # sum c[t+1] y^t
+      tee = 1:4
+      ans = y*0
+      ans = ans + cvals[1]
+      for( j in tee )
+        ans = ans + y^j*cvals[j+1]
+      ans
+    }
+    
+    # first derivative of h at y, from approx at pt
+    hp = function(y,pt){
+      tee = 0:3
+      ans = y*0
+      for( j in tee )
+        ans = ans + (-y/pt)^j
+      ans = ans * (-pt)^-1
+      ans
+    }
+    
+    # second derivative of h at y, from approx at pt
+    hpp = function(y,pt){
+      tee = 0:2
+      ans = y*0
+      for( j in tee )
+        ans = ans + (j+1) * (-y/pt)^j
+      ans = ans *(-pt)^-2
+      ans
+    }
+    
+    # function value
+    f      = x*0
+    f[lo]  = h( x[lo]-eps, coefs )
+    f[hi]  = h( x[hi]-M,   Coefs )
+    f[md]  = -log(x[md])
+    
+    if( der<1 )return(cbind(f))
+    
+    # first derivative
+    fp     = x*0
+    fp[lo] = hp( x[lo]-eps, eps )
+    fp[hi] = hp( x[hi]-M, M )
+    fp[md] = -1/x[md]
+    
+    if( der<2 )return(cbind(f,fp))
+    
+    # second derivative
+    fpp     = x*0
+    fpp[lo] = hpp( x[lo]-eps, eps )
+    fpp[hi] = hpp( x[hi]-M, M )
+    fpp[md] = 1/x[md]^2
+    
+    return( cbind(f,fp,fpp) )
+    # End of mllog()
+  }
+  svdlm <- function(X,y){
+    # Linear model regression coefficient via SVD
+    
+    # Tolerances for generalized inverse via SVD
+    RELTOL = 1e-9
+    ABSTOL = 1e-100
+    
+    # Get Xplus = generalized inverse of X
+    # If svd algorithm failures are encountered
+    # it sometimes helps to try svd(t(X)) and
+    # translate back. First check to ensure that
+    # X does not contain NaN or Inf or -Inf.
+    svdX     = svd(X)
+    d        = svdX$d
+    lo       = d < (RELTOL * max(d) + ABSTOL)
+    dinv     = 1/d
+    dinv[lo] = 0
+    Xplus    = svdX$v %*% diag(dinv,nrow=length(dinv)) %*% t(svdX$u)
+    # taking care with diag when dinv is 1x1
+    # to avoid getting the identity matrix of
+    # size floor(dinv)
+    
+    # Return X^+ y
+    Xplus %*% matrix(y,ncol=1)
+  }
+  ######################################################
+  ALPHA <- 0.3
+  BETA <- 0.8
+  BACKEPS <- 0
+  eps <- 1e-8
+  M <- Inf
+  maxit <- 100
+  ######################################################
+  n <- length(deltavec)
+  n1 <- sum(deltavec)
+  n0 <- n-n1
+  phihat <- c(log(n1/n0),rep(0,ncol(Zmat)-1))
+  
+  # Initial f, g
+  pivec <- 1/(1+exp(-c(Zmat%*%phihat)))
+  oldvals1 <- mllog(x=pivec,eps=eps,M=M,der=2)
+  oldvals2 <- mllog(x=1-pivec,eps=eps,M=M,der=2)
+  
+  fold <- sum( (deltavec*oldvals1[,1]+(1-deltavec)*oldvals2[,1]) )
+  gold <- t(Zmat) %*% ( (deltavec*oldvals1[,2]-(1-deltavec)*oldvals2[,2])*pivec*(1-pivec) )
+  
+  converged <- FALSE
+  iter      <- 0
+  while( !converged ){
+    iter <- iter + 1
+    
+    # Get Newton Step
+    zt <- t(Zmat) %*% 
+      diag( (deltavec*oldvals1[,3]+(1-deltavec)*oldvals2[,3])*pivec^2*(1-pivec)^2+
+              (deltavec*oldvals1[,2]-(1-deltavec)*oldvals2[,2])*(1-2*pivec)*pivec*(1-pivec) ) %*% Zmat
+    yt <- gold
+    step <- -svdlm(zt,yt)  #  more reliable than step = -lm( yt~zt-1 )$coef
+    
+    backtrack <- FALSE
+    s <- 1   # usually called t, but R uses t for transpose
+    while( !backtrack ){
+      pivecnew <- 1/(1+exp(-c(Zmat%*%(phihat + s*step))))
+      newvals1 <- mllog(x=pivecnew,eps=eps,M=M,der=2)
+      newvals2 <- mllog(x=1-pivecnew,eps=eps,M=M,der=2)
+      fnew <- sum( (deltavec*newvals1[,1]+(1-deltavec)*newvals2[,1]) )
+      targ <- fold + ALPHA * s * sum( gold*step ) + BACKEPS # (BACKEPS for roundoff, should not be needed)
+      if(  fnew <= targ ){
+        # backtracking has converged
+        backtrack <- TRUE
+        pivec     <- pivecnew
+        oldvals1  <- newvals1
+        oldvals2  <- newvals2
+        fold      <- fnew
+        gold      <- t(Zmat) %*% ( (deltavec*oldvals1[,2]-(1-deltavec)*oldvals2[,2])*pivec*(1-pivec) )
+        # take the step
+        phihat       <- phihat + s*step
+      }else{
+        s <- s * BETA
+      }
+    }
+    
+    # Newton decrement and gradient norm
+    ndec     <- sqrt( sum( (step*gold)^2 ) )
+    gradnorm <- sqrt( sum(gold^2))
+    
+    # print(c(fold,gradnorm,ndec,lam))
+    
+    converged <- ( ndec^2 <= 1e-8)
+    if( iter > maxit )break
+  }
+  return(c(phihat))
+}
+Estphi <- function(Bmat,Zsmat,deltavec){
+  ######################################################
+  mreciprocal <- function( x, eps, M, der=0 ){
+    # minus log and its first der derivatives, on  eps < x < M
+    # 4th order Taylor approx to left of eps and right of M
+    # der = 0 or 1 or 2
+    # 4th order is lowest that gives self concordance
+    
+    if( missing(M) )
+      M = Inf
+    if( eps>M )
+      stop("Thresholds out of order")
+    
+    lo = x < eps
+    hi = x > M
+    md = (!lo) & (!hi)
+    
+    # Coefficients for 4th order Taylor approx below eps
+    coefs      = -(-1/eps)^(1:5)
+    
+    # Coefficients for 4th order Taylor approx above M
+    Coefs      = -(-1/M)^(1:5)
+    
+    # degree 4 polynomial approx to log
+    h = function(y,cvals){ # cvals are coefs at eps, Coefs at M
+      # sum c[t+1] y^t
+      tee = 1:4
+      ans = y*0
+      ans = ans + cvals[1]
+      for( j in tee )
+        ans = ans + y^j*cvals[j+1]
+      ans
+    }
+    
+    # first derivative of h at y, from approx at pt
+    hp = function(y,pt){
+      tee = 0:3
+      ans = y*0
+      for( j in tee )
+        ans = ans + (-y/pt)^j
+      ans = ans * (-pt)^-1
+      ans
+    }
+    
+    # second derivative of h at y, from approx at pt
+    hpp = function(y,pt){
+      tee = 0:2
+      ans = y*0
+      for( j in tee )
+        ans = ans + (j+1) * (-y/pt)^j
+      ans = ans *(-pt)^-2
+      ans
+    }
+    
+    # function value
+    f      = x*0
+    f[lo]  = h( x[lo]-eps, coefs )
+    f[hi]  = h( x[hi]-M,   Coefs )
+    f[md]  = 1/x[md]
+    
+    if( der<1 )return(cbind(f))
+    
+    # first derivative
+    fp     = x*0
+    fp[lo] = hp( x[lo]-eps, eps )
+    fp[hi] = hp( x[hi]-M, M )
+    fp[md] = -1/x[md]^2
+    
+    if( der<2 )return(cbind(f,fp))
+    
+    # second derivative
+    fpp     = x*0
+    fpp[lo] = hpp( x[lo]-eps, eps )
+    fpp[hi] = hpp( x[hi]-M, M )
+    fpp[md] = 2/x[md]^3
+    
+    return( cbind(f,fp,fpp) )
+  }
+  svdlm <- function(X,y){
+    # Linear model regression coefficient via SVD
+    
+    # Tolerances for generalized inverse via SVD
+    RELTOL = 1e-9
+    ABSTOL = 1e-100
+    
+    # Get Xplus = generalized inverse of X
+    # If svd algorithm failures are encountered
+    # it sometimes helps to try svd(t(X)) and
+    # translate back. First check to ensure that
+    # X does not contain NaN or Inf or -Inf.
+    svdX     = svd(X)
+    d        = svdX$d
+    lo       = d < (RELTOL * max(d) + ABSTOL)
+    dinv     = 1/d
+    dinv[lo] = 0
+    Xplus    = svdX$v %*% diag(dinv,nrow=length(dinv)) %*% t(svdX$u)
+    # taking care with diag when dinv is 1x1
+    # to avoid getting the identity matrix of
+    # size floor(dinv)
+    
+    # Return X^+ y
+    Xplus %*% matrix(y,ncol=1)
+  }
+  ######################################################
+  ALPHA <- 0.3
+  BETA <- 0.8
+  # BETA <- 0.5
+  BACKEPS <- 0
+  eps <- 1e-8
+  M <- Inf
+  maxit <- 50
+  ######################################################
+  n <- length(deltavec)
+  n1 <- sum(deltavec)
+  n0 <- n-n1
+  Bsmat <- Bmat[deltavec,]
+  
+  phihat <- c(log(n1/n0),rep(0,ncol(Zsmat)-1))
+  q <- length(phihat)
+  
+  # Initial f, g
+  pisvec <- 1/(1+exp(-c(Zsmat%*%phihat)))
+  oldvals <- mreciprocal(x=pisvec,eps=eps,M=M,der=2)
+  
+  fold <- 0.5*sum((t(Bsmat)%*%oldvals[,1] - t(Bmat)%*%rep(1,n))^2)
+  gold <- (t(Zsmat)%*%diag(oldvals[,2]*(1-pisvec)*pisvec)%*%Bsmat) %*% 
+    (t(Bsmat)%*%oldvals[,1] - t(Bmat)%*%rep(1,n))
+  
+  converged <- FALSE
+  iter      <- 0
+  while( !converged ){
+    iter <- iter + 1
+    
+    # Get Newton Step
+    zt <- (t(Zsmat)%*%diag(oldvals[,2]*(1-pisvec)*pisvec)%*%Bsmat) %*%
+      t( (t(Zsmat)%*%diag(oldvals[,2]*(1-pisvec)*pisvec)%*%Bsmat) )
+    for(j in 1:q){
+      for(k in 1:q){
+        zt[j,k] <- zt[j,k] + 
+          sum(c( t(Bsmat)%*%( oldvals[,3]*(1-pisvec)^2*pisvec^2*Zsmat[,j]*Zsmat[,k]+
+                                oldvals[,2]*(1-2*pisvec)*(1-pisvec)*pisvec*Zsmat[,j]*Zsmat[,k] ) ) * 
+                c(t(Bsmat)%*%oldvals[,1] - t(Bmat)%*%rep(1,n)) )
+      }
+    }
+    yt <- gold
+    step <- -svdlm(zt,yt)  #  more reliable than step = -lm( yt~zt-1 )$coef
+    
+    backtrack <- FALSE
+    s <- 1   # usually called t, but R uses t for transpose
+    while( !backtrack ){
+      pisvecnew <- 1/(1+exp(-c(Zsmat%*%(phihat + s*step))))
+      newvals <- mreciprocal(x=pisvecnew,eps=eps,M=M,der=2)
+      fnew <- 0.5*sum((t(Bsmat)%*%newvals[,1] - t(Bmat)%*%rep(1,n))^2)
+      targ <- fold + ALPHA * s * sum( gold*step ) + BACKEPS # (BACKEPS for roundoff, should not be needed)
+      if(  fnew <= targ ){
+        # backtracking has converged
+        backtrack <- TRUE
+        pisvec    <- pisvecnew
+        oldvals   <- newvals
+        fold      <- fnew
+        gold      <- (t(Zsmat)%*%diag(oldvals[,2]*(1-pisvec)*pisvec)%*%Bsmat) %*% 
+          (t(Bsmat)%*%oldvals[,1] - t(Bmat)%*%rep(1,n))
+        # take the step
+        phihat       <- phihat + s*step
+      }else{
+        s <- s * BETA
+      }
+    }
+    
+    # Newton decrement and gradient norm
+    ndec     <- sqrt( sum( (step*gold)^2 ) )
+    gradnorm <- sqrt( sum(gold^2))
+    
+    # print(c(fold,gradnorm,ndec,lam))
+    
+    converged <- ( ndec^2 <= 1e-8)
+    if( iter > maxit )break
+  }
+  return(c(phihat))
+}
+# EL optimization using W
+EstEL0 <- function(P,A,n0,maxit=100){
+  mllog <- function( x, eps, M, der=0 ){
+    # minus log and its first der derivatives, on  eps < x < M
+    # 4th order Taylor approx to left of eps and right of M
+    # der = 0 or 1 or 2
+    # 4th order is lowest that gives self concordance
+    
+    if( missing(M) )
+      M = Inf
+    if( eps>M )
+      stop("Thresholds out of order")
+    
+    lo = x < eps
+    hi = x > M
+    md = (!lo) & (!hi)
+    
+    # Coefficients for 4th order Taylor approx below eps
+    coefs      = rep(0,5)
+    coefs[1]   = -log(eps)
+    coefs[2:5] = (-eps)^-(1:4)/(1:4)
+    
+    # Coefficients for 4th order Taylor approx above M
+    Coefs      = rep(0,5)
+    Coefs[1]   = -log(M)
+    Coefs[2:5] = (-M)^-(1:4)/(1:4)
+    
+    # degree 4 polynomial approx to log
+    h = function(y,cvals){ # cvals are coefs at eps, Coefs at M
+      # sum c[t+1] y^t
+      tee = 1:4
+      ans = y*0
+      ans = ans + cvals[1]
+      for( j in tee )
+        ans = ans + y^j*cvals[j+1]
+      ans
+    }
+    
+    # first derivative of h at y, from approx at pt
+    hp = function(y,pt){
+      tee = 0:3
+      ans = y*0
+      for( j in tee )
+        ans = ans + (-y/pt)^j
+      ans = ans * (-pt)^-1
+      ans
+    }
+    
+    # second derivative of h at y, from approx at pt
+    hpp = function(y,pt){
+      tee = 0:2
+      ans = y*0
+      for( j in tee )
+        ans = ans + (j+1) * (-y/pt)^j
+      ans = ans *(-pt)^-2
+      ans
+    }
+    
+    # function value
+    f      = x*0
+    f[lo]  = h( x[lo]-eps, coefs )
+    f[hi]  = h( x[hi]-M,   Coefs )
+    f[md]  = -log(x[md])
+    
+    if( der<1 )return(cbind(f))
+    
+    # first derivative
+    fp     = x*0
+    fp[lo] = hp( x[lo]-eps, eps )
+    fp[hi] = hp( x[hi]-M, M )
+    fp[md] = -1/x[md]
+    
+    if( der<2 )return(cbind(f,fp))
+    
+    # second derivative
+    fpp     = x*0
+    fpp[lo] = hpp( x[lo]-eps, eps )
+    fpp[hi] = hpp( x[hi]-M, M )
+    fpp[md] = 1/x[md]^2
+    
+    return( cbind(f,fp,fpp) )
+    # End of mllog()
+  }
+  svdlm <- function(X,y){
+    # Linear model regression coefficient via SVD
+    
+    # Tolerances for generalized inverse via SVD
+    RELTOL = 1e-9
+    ABSTOL = 1e-100
+    
+    # Get Xplus = generalized inverse of X
+    # If svd algorithm failures are encountered
+    # it sometimes helps to try svd(t(X)) and
+    # translate back. First check to ensure that
+    # X does not contain NaN or Inf or -Inf.
+    svdX     = svd(X)
+    d        = svdX$d
+    lo       = d < (RELTOL * max(d) + ABSTOL)
+    dinv     = 1/d
+    dinv[lo] = 0
+    Xplus    = svdX$v %*% diag(dinv,nrow=length(dinv)) %*% t(svdX$u)
+    # taking care with diag when dinv is 1x1
+    # to avoid getting the identity matrix of
+    # size floor(dinv)
+    
+    # Return X^+ y
+    Xplus %*% matrix(y,ncol=1)
+  }
+  
+  ALPHA <- 0.3
+  BETA <- 0.8
+  BACKEPS <- 0
+  
+  P <- as.matrix(P)
+  n1 <- nrow(P)
+  K <- ncol(P)
+  if(is.null(A)){
+    r <- 0
+  }else{
+    A <- as.matrix(A)
+    r <- ncol(A)
+  }
+  
+  n <- n1+n0
+  z <- cbind(P-1.0,A)
+  
+  # eps <- 1/n
+  eps <- 1e-8
+  M <- Inf
+  
+  lam <- c( rep(n/(K*n1),K) , rep(0,r) )
+  init1 <- mllog( (n/n1)+z%*%lam, eps=eps, M=M, der=2 )
+  init2 <- mllog( sum(lam[1:K]), eps=eps, M=M, der=2 )
+  
+  # Initial f, g
+  fold <- sum(init1[,1]) + n0*init2[,1]
+  gold <- apply( z * init1[,2],2,sum )
+  gold[1:K] <- gold[1:K] + n0*init2[2]
+  
+  converged <- FALSE
+  iter      <- 0
+  oldvals1  <- init1
+  oldvals2  <- init2
+  while( !converged ){
+    iter <- iter + 1
+    
+    # Get Newton Step
+    rootllpp <- sqrt(oldvals1[,3])  # sqrt 2nd deriv of -llog lik
+    rootllW <- sqrt(n0*oldvals2[3])
+    zt <- z
+    for( j in 1:(K+r) )
+      zt[,j] <- zt[,j] * rootllpp
+    zt <- rbind(zt,c(rep(rootllW,K),rep(0.0,r)))
+    yt   <- c(oldvals1[,2] / rootllpp, (n0*oldvals2[2])/rootllW)
+    step <- -svdlm(zt,yt)  #  more reliable than step = -lm( yt~zt-1 )$coef
+    
+    backtrack <- FALSE
+    s <- 1   # usually called t, but R uses t for transpose
+    while( !backtrack ){
+      newvals1 <- mllog( (n/n1)+z%*%(lam+s*step),eps=eps,M=M,der=2 )
+      newvals2 <- mllog( sum((lam+s*step)[1:K]),eps=eps,M=M,der=2 )
+      fnew <- sum(newvals1[,1]) + n0*newvals2[,1]
+      targ <- fold + ALPHA * s * sum( gold*step ) + BACKEPS # (BACKEPS for roundoff, should not be needed)
+      if(  fnew <= targ ){
+        # backtracking has converged
+        backtrack <- TRUE
+        oldvals1  <- newvals1
+        oldvals2  <- newvals2
+        fold      <- fnew
+        gold      <- apply( z * oldvals1[,2],2,sum )
+        gold[1:K] <- gold[1:K] + n0*oldvals2[,2]
+        # take the step
+        lam       <- lam + s*step
+      }else{
+        s <- s * BETA
+      }
+    }
+    
+    # Newton decrement and gradient norm
+    ndec     <- sqrt( sum( (step*gold)^2 ) )
+    gradnorm <- sqrt( sum(gold^2))
+    
+    # print(c(fold,gradnorm,ndec,lam))
+    
+    converged <- ( ndec^2 <= 1e-8)
+    if( iter > maxit )break
+  }
+  
+  pvec <- as.vector(1/(n/n1+z%*%lam))
+  pvec <- pvec/sum(pvec)
+  return(list("pvec"=pvec,"lam"=as.vector(lam),"elval"=fold))
+}
+# EL optimization without using W
+EstEL1 <- function(P,A,n0,maxit=100){
+  mllog <- function( x, eps, M, der=0 ){
+    # minus log and its first der derivatives, on  eps < x < M
+    # 4th order Taylor approx to left of eps and right of M
+    # der = 0 or 1 or 2
+    # 4th order is lowest that gives self concordance
+    
+    if( missing(M) )
+      M = Inf
+    if( eps>M )
+      stop("Thresholds out of order")
+    
+    lo = x < eps
+    hi = x > M
+    md = (!lo) & (!hi)
+    
+    # Coefficients for 4th order Taylor approx below eps
+    coefs      = rep(0,5)
+    coefs[1]   = -log(eps)
+    coefs[2:5] = (-eps)^-(1:4)/(1:4)
+    
+    # Coefficients for 4th order Taylor approx above M
+    Coefs      = rep(0,5)
+    Coefs[1]   = -log(M)
+    Coefs[2:5] = (-M)^-(1:4)/(1:4)
+    
+    # degree 4 polynomial approx to log
+    h = function(y,cvals){ # cvals are coefs at eps, Coefs at M
+      # sum c[t+1] y^t
+      tee = 1:4
+      ans = y*0
+      ans = ans + cvals[1]
+      for( j in tee )
+        ans = ans + y^j*cvals[j+1]
+      ans
+    }
+    
+    # first derivative of h at y, from approx at pt
+    hp = function(y,pt){
+      tee = 0:3
+      ans = y*0
+      for( j in tee )
+        ans = ans + (-y/pt)^j
+      ans = ans * (-pt)^-1
+      ans
+    }
+    
+    # second derivative of h at y, from approx at pt
+    hpp = function(y,pt){
+      tee = 0:2
+      ans = y*0
+      for( j in tee )
+        ans = ans + (j+1) * (-y/pt)^j
+      ans = ans *(-pt)^-2
+      ans
+    }
+    
+    # function value
+    f      = x*0
+    f[lo]  = h( x[lo]-eps, coefs )
+    f[hi]  = h( x[hi]-M,   Coefs )
+    f[md]  = -log(x[md])
+    
+    if( der<1 )return(cbind(f))
+    
+    # first derivative
+    fp     = x*0
+    fp[lo] = hp( x[lo]-eps, eps )
+    fp[hi] = hp( x[hi]-M, M )
+    fp[md] = -1/x[md]
+    
+    if( der<2 )return(cbind(f,fp))
+    
+    # second derivative
+    fpp     = x*0
+    fpp[lo] = hpp( x[lo]-eps, eps )
+    fpp[hi] = hpp( x[hi]-M, M )
+    fpp[md] = 1/x[md]^2
+    
+    return( cbind(f,fp,fpp) )
+    # End of mllog()
+  }
+  svdlm <- function(X,y){
+    # Linear model regression coefficient via SVD
+    
+    # Tolerances for generalized inverse via SVD
+    RELTOL = 1e-9
+    ABSTOL = 1e-100
+    
+    # Get Xplus = generalized inverse of X
+    # If svd algorithm failures are encountered
+    # it sometimes helps to try svd(t(X)) and
+    # translate back. First check to ensure that
+    # X does not contain NaN or Inf or -Inf.
+    svdX     = svd(X)
+    d        = svdX$d
+    lo       = d < (RELTOL * max(d) + ABSTOL)
+    dinv     = 1/d
+    dinv[lo] = 0
+    Xplus    = svdX$v %*% diag(dinv,nrow=length(dinv)) %*% t(svdX$u)
+    # taking care with diag when dinv is 1x1
+    # to avoid getting the identity matrix of
+    # size floor(dinv)
+    
+    # Return X^+ y
+    Xplus %*% matrix(y,ncol=1)
+  }
+  
+  ALPHA <- 0.3
+  BETA <- 0.8
+  BACKEPS <- 0
+  
+  P <- as.matrix(P)
+  n1 <- nrow(P)
+  K <- ncol(P)
+  if(is.null(A)){
+    r <- 0
+  }else{
+    A <- as.matrix(A)
+    r <- ncol(A)
+  }
+  
+  n <- n1+n0
+  X <- cbind(P,A)
+  
+  # eps <- 1/n
+  eps <- 1e-8
+  M <- Inf
+  
+  lam <- c( rep(n/(K*n1),K) , rep(0,r) )
+  
+  init <- mllog( 1+X%*%lam, eps=eps, M=M, der=2 )
+  
+  # Initial f, g
+  fold <- sum(init[,1])
+  gold <- t(X)%*%init[,2]
+  
+  converged <- FALSE
+  iter      <- 0
+  oldvals  <- init
+  while( !converged ){
+    iter <- iter + 1
+    
+    # Get Newton Step
+    rootllpp <- sqrt(oldvals[,3])  # sqrt 2nd deriv of -llog lik
+    zt <- X
+    for( j in 1:(K+r) )
+      zt[,j] <- zt[,j] * rootllpp
+    yt   <- oldvals[,2] / rootllpp
+    step <- -svdlm(zt,yt)  #  more reliable than step = -lm( yt~zt-1 )$coef
+    
+    backtrack <- FALSE
+    s <- 1   # usually called t, but R uses t for transpose
+    while( !backtrack ){
+      newvals <- mllog( 1+X%*%(lam+s*step),eps=eps,M=M,der=2 )
+      fnew <- sum(newvals[,1])
+      targ <- fold + ALPHA * s * sum( gold*step ) + BACKEPS # (BACKEPS for roundoff, should not be needed)
+      if(  fnew <= targ ){
+        # backtracking has converged
+        backtrack <- TRUE
+        oldvals   <- newvals
+        fold      <- fnew
+        gold      <- t(X)%*%oldvals[,2]
+        # take the step
+        lam       <- lam + s*step
+      }else{
+        s <- s * BETA
+      }
+    }
+    
+    # Newton decrement and gradient norm
+    ndec     <- sqrt( sum( (step*gold)^2 ) )
+    gradnorm <- sqrt( sum(gold^2))
+    
+    # print(c(fold,gradnorm,ndec,lam))
+    
+    converged <- ( ndec^2 <= 1e-8)
+    if( iter > maxit )break
+  }
+  
+  pvec <- as.vector(1/(1+X%*%lam))
+  pvec <- pvec/sum(pvec)
+  return(list("pvec"=pvec,"lam"=as.vector(lam),"elval"=fold))
+}
+```
+
+# 3. Algorithms
+
+## 3.1 Simulation Data generation
+
+For each unit $i$, we independently generate
+\begin{equation}
+  X_{i1} \sim N(1,1/3), \quad X_{i2} \sim N(1,1/3), \quad \epsilon_{i} \sim N(0,1/3)
+\end{equation}
+and let $Y_{i} = 0.5 + X_{i1} + 0.5 X_{i2} + \epsilon_{i}$. The total sample size is $n=2,000$. The parameters of interest are the population mean $\mu_{0} = \mathbb{E}(Y) = 2$ and the third quartile $q_{0} = 2.584$ of the response variable $Y_i$, which is defined as the solution to $\mathbb{E} \{\mathbb{I}(Y \le q)\} - 0.75 = 0$. Then, we generate $\delta_{i} \sim \mathrm{Ber}(\pi(\mathbf{x}_{i},y_{i}))$, where $\mathrm{logit}\{\pi(\mathbf{x},y)\} = -0.114 + 0.5x_{1} + 0.25y$ and $\mathrm{logit}(\pi) = \log(\pi/(1-\pi))$ is the logit function. We also generate a validation sample of $(\mathbf{X}, Y)$ of the size $n_{v} = 0.1n$ without missingness from the same distribution of the original sample.
+
+```{r}
+set.seed(1234)
+n <- 2000
+
+mu0 <- 2
+alpha_quan <- 0.75
+s20 <- 0.75
+quan0 <- qnorm(p=alpha_quan,mean=mu0,sd=sqrt(s20))
+theta0 <- c(mu0,quan0)
+
+X1vec <- rnorm(n,1,sqrt(1/3))
+X2vec <- rnorm(n,1,sqrt(1/3))
+evec <- rnorm(n,0,sqrt(1/3))
+yvec <- 0.5 + 1*X1vec + 0.5*X2vec + evec
+
+phi <- c(-0.114,0.5,0.25)
+Zmat <- cbind(1,X1vec,yvec)
+etavec <- -0.114 + 0.5*X1vec + 0.25*yvec
+Prvec <- 1/(1+exp(-etavec))
+Uvec <- runif(n,0,1)
+deltavec <- (Uvec<=Prvec)
+ysvec <- yvec[deltavec]
+n1 <- sum(deltavec)
+n0 <- n-n1
+
+## Validation sample
+nval <- 0.1*n
+X1val <- rnorm(nval,1,sqrt(1/3))
+X2val <- rnorm(nval,1,sqrt(1/3))
+eval <- rnorm(nval,0,sqrt(1/3))
+yval <- 0.5 + 1*X1val + 0.5*X2val + eval
+```
+
+## 3.2 MCEL algorithm
+
+### Step 1. Obtain the estimates of coefficients from the working PS models.
+
+#### PS Model 1 (PS1)
+
+\begin{equation}
+  \mathrm{logit}\left\{ \frac{\pi_{1}(\mathbf{x},y;\boldsymbol{\phi}_{1})}{1-\pi_{1}(\mathbf{x},y;\boldsymbol{\phi}_{1})} \right\} = \phi_{10} + \phi_{11} x_{1} + \phi_{12} x_{2}.
+\end{equation}
+
+```{r}
+Zmat1 <- cbind(1,X1vec,X2vec)
+Zsmat1 <- Zmat1[deltavec,]
+phihat1 <- Estphi_MAR(Zmat1,deltavec)
+```
+
+#### PS Model 2 (PS2)
+
+\begin{equation}
+  \mathrm{logit}\left\{ \frac{\pi_{2}(\mathbf{x},y;\boldsymbol{\phi}_{2})}{1-\pi_{2}(\mathbf{x},y;\boldsymbol{\phi}_{2})} \right\} = \phi_{20} + \phi_{21} x_{1} + \phi_{22} y.
+\end{equation}
+
+```{r}
+Bmat <- cbind(1,X1vec,X2vec)
+Zmat2 <- cbind(1,X1vec)
+Zsmat2 <- cbind(1,X1vec,yvec)[deltavec,]
+phihat2 <- Estphi(Bmat,Zsmat2,deltavec)
+```
+
+#### PS Model 3 (PS3)
+
+\begin{equation}
+  \mathrm{logit}\left\{ \frac{\pi_{3}(\mathbf{x},y;\boldsymbol{\phi}_{3})}{1-\pi_{3}(\mathbf{x},y;\boldsymbol{\phi}_{3})} \right\} = \phi_{30} + \phi_{31} x_{2} + \phi_{32} y.
+\end{equation}
+
+```{r}
+Bmat <- cbind(1,X1vec,X2vec)
+Zmat3 <- cbind(1,X2vec)
+Zsmat3 <- cbind(1,X2vec,yvec)[deltavec,]
+phihat3 <- Estphi(Bmat,Zsmat3,deltavec)
+```
+
+### Step 2. Adjust the PS models parameter estimates using the validation sample, and obtain a matrix of adjusted working PS values.
+
+```{r}
+Xval <- cbind(1,X1val,X2val)
+nuisval <- c(solve(t(Xval)%*%Xval)%*%t(Xval)%*%yval)
+yhat <- c(cbind(1,X1vec,X2vec)%*%nuisval)
+
+# PS1
+pivec1 <- 1/(1+exp( -c(Zsmat1%*%phihat1) ))
+
+# PS2
+q <- length(phihat2)
+est_adj <- function(adj){
+  res_int <- integrate(function(uvec){
+    sapply(uvec,function(u){
+      sum(1/(1+exp(-adj-c(Zmat2%*%phihat2[-q])-
+                     phihat2[q]*( yhat+sqrt(1/3)*u ))))*
+        dnorm(x=u,mean=0,sd=1)
+    })
+  },-Inf,Inf)
+  return(res_int$value-n1)
+}
+M <- 1
+while(TRUE){
+  if( est_adj(M)*est_adj(-M)<0 ){
+    break
+  }else{
+    M <- M+1
+  }
+}
+res_adj <- uniroot(est_adj,interval=c(-M,M))
+phihat2adj <- phihat2
+phihat2adj[1] <- phihat2adj[1] + res_adj$root
+pivec2 <- 1/(1+exp( -c(Zsmat2%*%phihat2adj) ))
+
+# PS3
+q <- length(phihat3)
+est_adj <- function(adj){
+  res_int <- integrate(function(uvec){
+    sapply(uvec,function(u){
+      sum(1/(1+exp(-adj-c(Zmat3%*%phihat3[-q])-
+                     phihat3[q]*( yhat+sqrt(1/3)*u ))))*
+        dnorm(x=u,mean=0,sd=1)
+    })
+  },-Inf,Inf)
+  return(res_int$value-n1)
+}
+M <- 1
+while(TRUE){
+  if( est_adj(M)*est_adj(-M)<0 ){
+    break
+  }else{
+    M <- M+1
+  }
+}
+res_adj <- uniroot(est_adj,interval=c(-M,M))
+phihat3adj <- phihat3
+phihat3adj[1] <- phihat3adj[1] + res_adj$root
+pivec3 <- 1/(1+exp( -c(Zsmat3%*%phihat3adj) ))
+
+# Combine the results.
+pimat <- cbind(pivec1,pivec2,pivec3)
+```
+
+### Step 3. Solve the EL optimization problem to obtain the weights $\{\widehat{p}_{i}\}$.
+
+```{r}
+Aux <- scale(cbind(X1vec,X2vec),center = T,scale = F)[deltavec,]
+res_el <- EstEL0(pimat,Aux,n-n1)
+pvec <- res_el$pvec
+```
+
+### Step 4. Based on the weights $\{\widehat{p}_{i}\}$, obtain the estimates of the parameters of interest.
+
+```{r}
+muhat <- sum(pvec*ysvec)/sum(pvec)
+res_quan <- uniroot(Estquan,interval=range(ysvec)+c(-3,3),ysvec=ysvec,pvec=pvec,alpha=alpha_quan)
+quanhat <- res_quan$root
+thetahat <- c(muhat,quanhat)
+cbind(theta0,thetahat)
+```
+
+## 3.3 EL-M algorithm
+
+In this algorithm, we do not assume that we have a validation sample.
+
+### Step 1. Initialization
+
+```{r}
+Xtmp <- cbind(1,X1vec[deltavec],X2vec[deltavec])
+nuis_init <- as.vector(solve(t(Xtmp)%*%Xtmp)%*%t(Xtmp)%*%ysvec)
+```
+
+### Step 2. Iteration until convergence
+
+```{r}
+##############################
+# Invariant terms
+pisvec1 <- 1/(1+exp( -c(Zsmat1%*%phihat1) ))
+pivec1 <- 1/(1+exp( -c(Zmat1%*%phihat1) ))
+pitil1 <- pisvec1 - mean(pivec1)
+H <- 1
+pisvec2 <- 1/(1+exp( -c(Zsmat2%*%phihat2) ))
+pisvec3 <- 1/(1+exp( -c(Zsmat3%*%phihat3) ))
+##############################
+# Iteration
+nuis_prev <- nuis_init
+is_conv <- T
+count <- 0
+while(TRUE){
+  count <- count+1
+  ##############################
+  ### Step 1. EL-step: Update pvec
+  yhat <- c(cbind(1,X1vec,X2vec)%*%nuis_prev)
+  ## PS2
+  q <- length(phihat2)
+  eta_tmp <- c(cbind(Zmat2,yhat)%*%phihat2)
+  res_int <- integrate(function(uvec){
+    sapply(uvec,function(u){
+      pivec <- 1/(1+exp(-eta_tmp-phihat2[q]*sqrt(1/3)*u ) )
+      return( mean( (1-pivec)^H*pivec )*dnorm(x=u,mean=0,sd=1) )
+    })
+  },-Inf,Inf)
+  pitil2 <- pisvec2 - res_int$value - sum(1-(1-pisvec2)^H)/n
+  ## PS3
+  q <- length(phihat3)
+  eta_tmp <- c(cbind(Zmat3,yhat)%*%phihat3)
+  res_int <- integrate(function(uvec){
+    sapply(uvec,function(u){
+      pivec <- 1/(1+exp(-eta_tmp-phihat3[q]*sqrt(1/3)*u ) )
+      return( mean( (1-pivec)^H*pivec )*dnorm(x=u,mean=0,sd=1) )
+    })
+  },-Inf,Inf)
+  pitil3 <- pisvec3 - res_int$value - sum(1-(1-pisvec3)^H)/n
+  
+  ## Combine the results.
+  pimat <- cbind(pitil1,pitil2,pitil3)
+  res_el <- EstEL1(pimat,Aux,n-n1)
+  pvec <- res_el$pvec
+  ##############################
+  ### Step 2. M-step
+  nuis_new <- c(solve(t(Xtmp)%*%diag(pvec)%*%Xtmp)%*%t(Xtmp)%*%diag(pvec)%*%ysvec)
+  diff <- sqrt(sum((nuis_new-nuis_prev)^2))
+  if(diff < 1e-6 ){
+    break
+  }else{
+    nuis_prev <- nuis_new
+  }
+  if(count >= 100){
+    is_conv <- F
+    break
+  }
+}
+##########################################
+muhat <- sum(pvec*ysvec)/sum(pvec)
+res_quan <- uniroot(Estquan,interval=range(ysvec)+c(-3,3),ysvec=ysvec,pvec=pvec,alpha=alpha_quan)
+quanhat <- res_quan$root
+thetahat <- c(muhat,quanhat)
+cbind(theta0,thetahat)
+```
